@@ -7,5 +7,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - name: release-please-action
-        uses: google-github-actions/release-please-action@v2.19.2
+      - uses: GoogleCloudPlatform/release-please-action@v2
+        with:
+          release-type: node
+          package-name: release-please-action
