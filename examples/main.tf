@@ -1,4 +1,4 @@
 resource "random_string" "rs" {
-  length = 30
+  length = 20
   special = true
 }
