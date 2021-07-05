@@ -1,0 +1,98 @@
+# PR will run Static Code Analysis / Terratest
+pr:
+  - main
+
+# CI Triggers will run for Versioning and Tagging
+trigger:
+  - main
+
+variables:
+  - group: tf_module_testing_variable_group  # The variable group in the Azure Devops library   
+
+stages:
+  - stage: security_lint
+    displayName: Static Code Analysis with Checkov
+    pool: $(TERRAFORM_VALIDATION_POOL)
+    # Only run during Pull Request
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: checkov_job
+        steps:
+        - checkout: self
+        - script: |
+              mkdir CheckovReport
+              checkov -d . -s
+              checkov -d . -s -o junitxml > $(System.DefaultWorkingDirectory)/CheckovReport/Checkov-Report.xml
+        - task: PublishTestResults@2
+          displayName: Publish checkov Test PublishTestResults
+          condition: succeededOrFailed()
+          inputs:
+            testResultsFormat: 'JUnit'
+            testResultsFiles: '**/*Checkov-Report.xml'
+            searchFolder: '$(System.DefaultWorkingDirectory)/CheckovReport'
+            mergeTestResults: false
+            testRunTitle: Checkov Scan
+            failTaskOnFailedTests: false
+            publishRunAttachments: true               
+  - stage: terratest
+    displayName: Unit Testing
+    pool: $(TERRAFORM_VALIDATION_POOL)
+    # Only run during Pull Request
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: terratest_job
+        steps:
+        - checkout: self
+        - task: InstallSSHKey@0
+          displayName: Install an SSH key
+          inputs:
+            knownHostsEntry: $(KNOWN_HOSTS)   # SSH Host Keys for terraform modules
+            sshPublicKey: $(PUBLIC_KEY)       # Public Key used to access terraform modules
+            sshKeySecureFile: id_rsa          # Private Key file in Azure Devops Library used to access terraform modules
+        - script: |
+              set -e
+              az login --identity -u $(MSI_ID)
+              export ARM_CLIENT_ID=`az keyvault secret show --name $(KV_CLIENT_ID) --vault-name $(KEY_VAULT) --subscription $(KEY_VAULT_SUBSCRIPTION) --query value -o tsv`
+              export ARM_CLIENT_SECRET=`az keyvault secret show --name $(KV_CLIENT_SECRET) --vault-name $(KEY_VAULT) --subscription $(KEY_VAULT_SUBSCRIPTION) --query value -o tsv`
+              export ARM_TENANT_ID=`az keyvault secret show --name $(KV_TENANT_ID) --vault-name $(KEY_VAULT) --subscription $(KEY_VAULT_SUBSCRIPTION) --query value -o tsv`
+              export HOME=/home/adminuser
+              make test
+          env: {
+            MSI_ID: $(MSI_ID),
+            ARM_USE_MSI: true,
+            ARM_TENANT_ID: $(ARM_TENANT_ID),
+            ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+          }
+  - stage: tag_module
+    displayName: Tag, Version, and Release
+    pool: $(TERRAFORM_VALIDATION_POOL)
+    # Only checking for main branch at this time.
+    condition: and(in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: tag_module
+        steps:
+        - checkout: self
+        - task: InstallSSHKey@0
+          displayName: Install an SSH key
+          inputs:
+            knownHostsEntry: $(KNOWN_HOSTS)   # SSH Host Keys for terraform modules
+            sshPublicKey: $(PUBLIC_KEY)       # Public Key used to access terraform modules
+            sshKeySecureFile: id_rsa          # Private Key file in Azure Devops Library used to access terraform modules
+        - script: |
+              set -e
+              # Install Node 15 apt repo - script sourced from https://deb.nodesource.com/setup_15.x
+              # TODO: Move installation steps outside of pipeline and into a pre-built container
+              sudo ./scripts/nodejs.sh
+
+              # Install Node
+              sudo apt-get install -y nodejs
+
+              # Install node modules
+              npm install npx semantic-release
+              npm install @semantic-release/git @semantic-release/changelog
+
+              # Run semantic-release
+              npx semantic-release
+          env: {
+            GH_TOKEN: $(GH_TOKEN)
+          }
